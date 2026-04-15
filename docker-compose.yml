@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  # 1. Base de datos Redis (El motor del Caché)
+  redis-server:
+    image: redis:alpine
+    container_name: redis_cache
+    # Aquí es donde variarán los parámetros para los experimentos del informe (50mb, 200mb, etc y LRU/LFU)
+    command: redis-server --maxmemory 50mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    networks:
+      - dist_net
+
+  # 2. Servicio de Métricas (Tu trabajo)
+  metrics_service:
+    build: ./metrics
+    container_name: metrics_api
+    ports:
+      - "8002:8002"
+    volumes:
+      # Montamos la carpeta data para que el CSV sobreviva si el contenedor se apaga
+      - ./data:/app/data
+    networks:
+      - dist_net
+
+  # 3. Generador de Respuestas (Tu trabajo)
+  response_generator:
+    build: ./response_generator
+    container_name: response_api
+    ports:
+      - "8000:8000"
+    volumes:
+      # Montamos la carpeta data para que pueda leer el CSV de la región metropolitana
+      - ./data:/app/data
+    environment:
+      - METRICS_URL=http://metrics_service:8002/event
+    networks:
+      - dist_net
+
+  # 4. Sistema de Caché (Trabajo de Persona B)
+  cache_service:
+    build: ./cache_service
+    container_name: cache_api
+    ports:
+      - "8001:8001"
+    environment:
+      - REDIS_HOST=redis-server
+      - REDIS_PORT=6379
+      - RESPONSE_GEN_URL=http://response_generator:8000/query
+      - METRICS_URL=http://metrics_service:8002/event
+    depends_on:
+      - redis-server
+      - response_generator
+      - metrics_service
+    networks:
+      - dist_net
+
+  # 5. Generador de Tráfico (Trabajo de Persona B)
+  traffic_generator:
+    build: ./traffic_generator
+    container_name: traffic_sim
+    environment:
+      - CACHE_URL=http://cache_service:8001/query
+      # Aquí configurarán si usan Zipf o Uniforme para sus pruebas
+      - DISTRIBUTION=zipf 
+    depends_on:
+      - cache_service
+    networks:
+      - dist_net
+
+networks:
+  dist_net:
+    driver: bridge
